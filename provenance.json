@@ -1,0 +1,42 @@
+{
+  "artifact": "hermes-fmv-partial-write-fix",
+  "upstream": {
+    "repository": "https://github.com/NousResearch/hermes-agent",
+    "baseline_commit": "b6bcb3e791c673e63974029bbab40cc9326803ff",
+    "license": "MIT"
+  },
+  "patch": {
+    "path": "patches/hermes-fmv-partial-write-fix.patch",
+    "sha256": "51dd143d79b3ab4e53e8081bb1c454f97f79f9a53f62da53bca418e33c87bde2",
+    "bytes": 5713,
+    "changed_files": [
+      "agent/tool_result_classification.py",
+      "agent/tool_dispatch_helpers.py",
+      "run_agent.py",
+      "tests/agent/test_tool_result_classification.py",
+      "tests/run_agent/test_file_mutation_verifier.py"
+    ]
+  },
+  "verification": {
+    "focused": {
+      "passed": 35,
+      "failed": 0
+    },
+    "blast_radius": {
+      "passed": 102,
+      "failed": 0,
+      "test_files": [
+        "tests/agent/test_tool_result_classification.py",
+        "tests/agent/test_tool_dispatch_helpers.py",
+        "tests/run_agent/test_file_mutation_verifier.py",
+        "tests/tools/test_patch_failure_tracking.py",
+        "tests/tools/test_patch_parser.py"
+      ]
+    },
+    "warning": "One pre-existing-environment PytestAssertRewriteWarning for already-imported anyio; no test failures."
+  },
+  "publication": {
+    "visibility": "private",
+    "upstream_submission": false
+  }
+}

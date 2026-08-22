@@ -1,0 +1,168 @@
+--- a/agent/tool_result_classification.py
++++ b/agent/tool_result_classification.py
+@@ -31,10 +31,15 @@
+         data = json.loads(result.strip())
+     except Exception:
+         return False
+-    if not isinstance(data, dict) or data.get("error"):
++    if not isinstance(data, dict):
+         return False
+     if tool_name == "write_file":
+         return "bytes_written" in data
+     if tool_name == "patch":
+-        return data.get("success") is True
++        if data.get("success") is True:
++            return True
++        return any(
++            isinstance(data.get(field), list) and bool(data[field])
++            for field in ("files_modified", "files_created", "files_deleted")
++        )
+     return False
+--- a/agent/tool_dispatch_helpers.py
++++ b/agent/tool_dispatch_helpers.py
+@@ -470,11 +470,21 @@
+     if not isinstance(data, dict):
+         return targets
+ 
+-    files = data.get("files_modified")
+-    if isinstance(files, list):
+-        landed = [str(p) for p in files if p]
+-        if landed:
+-            return landed
++    landed: List[str] = []
++    for field in ("files_modified", "files_created", "files_deleted"):
++        files = data.get(field)
++        if not isinstance(files, list):
++            continue
++        for item in files:
++            if not item:
++                continue
++            value = str(item)
++            if field == "files_modified" and " -> " in value:
++                landed.extend(part for part in value.split(" -> ", 1) if part)
++            else:
++                landed.append(value)
++    if landed:
++        return list(dict.fromkeys(landed))
+ 
+     resolved = data.get("resolved_path")
+     if resolved:
+--- a/run_agent.py
++++ b/run_agent.py
+@@ -3649,9 +3649,13 @@
+                         mgr.record_agent_write(_p)
+                     except Exception:
+                         pass
+-        if is_error and not landed:
++        if is_error:
+             preview = _extract_error_preview(result)
++            landed_set = set(landed_paths) if landed else set()
+             for path in targets:
++                if path in landed_set:
++                    state.pop(path, None)
++                    continue
+                 # Keep the FIRST error we saw for a given path unless we
+                 # later see success.  A repeated failure with a different
+                 # message shouldn't silently overwrite the original.
+--- a/tests/agent/test_tool_result_classification.py
++++ b/tests/agent/test_tool_result_classification.py
+@@ -1,6 +1,8 @@
+ """Tests for shared tool result classification helpers."""
+ 
+ import json
++
++import pytest
+ 
+ from agent.tool_result_classification import (
+     file_mutation_result_landed,
+@@ -16,6 +18,29 @@
+     assert file_mutation_result_landed("write_file", result) is True
+ 
+ 
++@pytest.mark.parametrize("field", ["files_modified", "files_created", "files_deleted"])
++def test_partial_patch_with_landed_files_counts_as_landed(field):
++    result = json.dumps({
++        "success": False,
++        "error": "Apply phase failed after one file changed",
++        field: ["/tmp/changed.md"],
++    })
++
++    assert file_mutation_result_landed("patch", result) is True
++
++
++def test_failed_patch_without_landed_files_stays_failed():
++    result = json.dumps({
++        "success": False,
++        "error": "Apply phase failed before any file changed",
++        "files_modified": [],
++        "files_created": [],
++        "files_deleted": [],
++    })
++
++    assert file_mutation_result_landed("patch", result) is False
++
++
+ 
+ 
+ 
+--- a/tests/run_agent/test_file_mutation_verifier.py
++++ b/tests/run_agent/test_file_mutation_verifier.py
+@@ -163,6 +163,26 @@
+ 
+         assert paths == ["/tmp/project/src/app.py"]
+ 
++    def test_landed_paths_include_created_deleted_and_move_endpoints(self):
++        paths = _extract_landed_file_mutation_paths(
++            "patch",
++            {"mode": "patch", "patch": "*** Begin Patch\n*** End Patch\n"},
++            json.dumps({
++                "success": False,
++                "error": "later operation failed",
++                "files_modified": ["/tmp/old.md -> /tmp/new.md"],
++                "files_created": ["/tmp/created.md"],
++                "files_deleted": ["/tmp/deleted.md"],
++            }),
++        )
++
++        assert paths == [
++            "/tmp/old.md",
++            "/tmp/new.md",
++            "/tmp/created.md",
++            "/tmp/deleted.md",
++        ]
++
+     def test_write_file_with_lint_error_counts_as_landed(self):
+         agent = _bare_agent()
+         agent._record_file_mutation_result(
+@@ -212,6 +232,31 @@
+         )
+ 
+         assert agent._turn_failed_file_mutations == {}
++
++    def test_partial_multi_file_patch_only_clears_landed_targets(self):
++        agent = _bare_agent()
++        args = {
++            "mode": "patch",
++            "patch": (
++                "*** Begin Patch\n"
++                "*** Update File: /tmp/changed.md\n"
++                "@@ @@\n-old\n+new\n"
++                "*** Update File: /tmp/failed.md\n"
++                "@@ @@\n-old\n+new\n"
++                "*** End Patch\n"
++            ),
++        }
++        result = json.dumps({
++            "success": False,
++            "error": "Apply phase failed after one file changed",
++            "files_modified": ["/tmp/changed.md"],
++        })
++
++        agent._record_file_mutation_result("patch", args, result, is_error=True)
++
++        assert agent._turn_file_mutation_paths == {"/tmp/changed.md"}
++        assert "/tmp/changed.md" not in agent._turn_failed_file_mutations
++        assert set(agent._turn_failed_file_mutations) == {"/tmp/failed.md"}
+ 
+     def test_repeated_failure_keeps_first_error(self):
+         agent = _bare_agent()
